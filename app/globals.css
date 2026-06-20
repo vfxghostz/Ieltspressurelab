@@ -2185,6 +2185,42 @@ p {
   color: var(--danger);
 }
 
+.command-module-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.command-module-picker button {
+  display: grid;
+  gap: 2px;
+  min-width: 132px;
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--text);
+  background: var(--module-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 180ms var(--ease-out), border-color 180ms var(--ease-out), color 180ms var(--ease-out);
+}
+
+.command-module-picker button:hover,
+.command-module-picker button[aria-pressed="true"] {
+  background: var(--module-active);
+  border-color: var(--primary);
+}
+
+.command-module-picker span {
+  font-weight: 850;
+}
+
+.command-module-picker small {
+  color: var(--text-muted);
+  font-family: var(--font-data);
+}
+
 .profile-structure-button,
 .login-structure-button {
   display: inline-flex;
@@ -2687,6 +2723,57 @@ fieldset:disabled button {
   color: var(--text);
   background: var(--module-active);
   border-radius: 12px;
+}
+
+.writing-notes-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.writing-notes-field span {
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.writing-notes-field textarea {
+  min-height: 190px;
+}
+
+.topic-hidden-banner,
+.brainstorm-locker {
+  margin-bottom: 14px;
+  padding: 14px;
+  color: var(--text);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.topic-hidden-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.topic-hidden-banner span,
+.brainstorm-locker p {
+  color: var(--text-muted);
+}
+
+.brainstorm-locker {
+  display: grid;
+  gap: 8px;
+  white-space: pre-wrap;
+}
+
+.brainstorm-locker span {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 850;
 }
 
 textarea {

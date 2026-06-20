@@ -24,6 +24,7 @@ import {
   Zap
 } from "lucide-react";
 import { supabase, type Database, type Json } from "@/integrations/supabase/client";
+import { designThemes } from "@/src/design/themes";
 import {
   type ExamLevel,
   listeningTask,
@@ -36,8 +37,9 @@ import {
   writingTask
 } from "@/src/data/mockExamData";
 import { accuracyToBand, calculateAccuracy, calculateWpm, checkAnswers, countWords, renderProgressBar } from "@/src/lib/examScoring";
-import { readModuleRatings, saveModuleRating, type ModuleRating, type ModuleRatings } from "@/src/lib/moduleRatingsStorage";
+import { readModuleRatings, saveModuleRating, type ModuleRatingInput, type ModuleRatings } from "@/src/lib/moduleRatingsStorage";
 import { pressureProfileAxes, readStoredPressureProfile } from "@/src/lib/pressureProfileStorage";
+import type { DesignThemeId } from "@/src/types";
 
 type TestResultInsert = Database["public"]["Tables"]["test_results"]["Insert"];
 
@@ -57,6 +59,11 @@ interface ScoreSnapshot {
 }
 
 const latestScoreKey = "ielts-pressure-lab-latest-score";
+const themeStorageKey = "ielts-pressure-lab-theme";
+
+function isDesignTheme(value: string | null): value is DesignThemeId {
+  return value === "clinical" || value === "graphite" || value === "bilingual";
+}
 
 const moduleIcons: Record<ExamModuleId, typeof BookOpen> = {
   reading: BookOpen,
@@ -95,6 +102,7 @@ export function PressureLabSimulator() {
   const writingStartedAtRef = useRef<number | null>(null);
 
   const [headerView, setHeaderView] = useState<HeaderView>("console");
+  const [designTheme, setDesignTheme] = useState<DesignThemeId>("clinical");
   const [activeModule, setActiveModule] = useState<ExamModuleId>("reading");
   const [readingPhase, setReadingPhase] = useState<ReadingPhase>("setup");
   const [readingLevel, setReadingLevel] = useState<ExamLevel>(2);
@@ -115,12 +123,17 @@ export function PressureLabSimulator() {
   const [writingPhase, setWritingPhase] = useState<WritingPhase>("setup");
   const [topicBombSeconds, setTopicBombSeconds] = useState(writingTask.topicBombSeconds);
   const [writingSeconds, setWritingSeconds] = useState(writingTask.writingSeconds);
+  const [brainstormNotes, setBrainstormNotes] = useState("");
   const [essayText, setEssayText] = useState("");
   const [erasuresUsed, setErasuresUsed] = useState(writingTask.erasuresStart);
   const [submitStatus, setSubmitStatus] = useState("");
   const [currentPressureProfile, setCurrentPressureProfile] = useState<PressureProfile>(pressureProfile);
   const [moduleRatings, setModuleRatings] = useState<ModuleRatings>({});
 
+  const activeListeningQuestions = useMemo(
+    () => listeningTask.questionsByLevel[listeningLevel] ?? listeningTask.questions,
+    [listeningLevel]
+  );
   const wordCount = useMemo(() => countWords(essayText), [essayText]);
   const elapsedWritingSeconds = writingStartedAtRef.current ? Math.max(1, Math.round((Date.now() - writingStartedAtRef.current) / 1000)) : 0;
   const writingWpm = calculateWpm(wordCount, elapsedWritingSeconds);
@@ -132,6 +145,11 @@ export function PressureLabSimulator() {
   };
 
   useEffect(() => {
+    const storedTheme = window.localStorage.getItem(themeStorageKey);
+    if (isDesignTheme(storedTheme)) {
+      setDesignTheme(storedTheme);
+    }
+
     setCurrentPressureProfile(readStoredPressureProfile());
     setModuleRatings(readModuleRatings());
 
@@ -144,12 +162,21 @@ export function PressureLabSimulator() {
     return () => window.removeEventListener("focus", handleFocus);
   }, []);
 
-  const persistModuleRating = (rating: ModuleRating) => {
-    saveModuleRating(rating);
+  const persistModuleRating = (rating: ModuleRatingInput) => {
+    const nextRating = saveModuleRating(rating);
+    if (!nextRating) {
+      return;
+    }
+
     setModuleRatings((current) => ({
       ...current,
-      [rating.module]: rating
+      [rating.module]: nextRating
     }));
+  };
+
+  const handleDesignThemeChange = (nextTheme: DesignThemeId) => {
+    setDesignTheme(nextTheme);
+    window.localStorage.setItem(themeStorageKey, nextTheme);
   };
 
   const submitResult = useCallback(
@@ -260,17 +287,17 @@ export function PressureLabSimulator() {
   }, [currentPressureProfile, readingAnswers, readingCompletedSeconds, readingLevel, readingPhase, readingSeconds, submitResult]);
 
   const submitListening = useCallback(() => {
-    const checks = checkAnswers(listeningTask.questions, listeningAnswers);
+    const checks = checkAnswers(activeListeningQuestions, listeningAnswers);
     const correct = checks.filter((check) => check.correct).length;
-    const accuracy = calculateAccuracy(correct, listeningTask.questions.length);
+    const accuracy = calculateAccuracy(correct, activeListeningQuestions.length);
     const band = accuracyToBand(accuracy);
-    const missed = listeningTask.questions.filter((question) => missedListening[question.id]).length;
+    const missed = activeListeningQuestions.filter((question) => missedListening[question.id]).length;
     persistModuleRating({
       module: "listening",
       bandScore: band,
       accuracy,
       primary: `${missed} missed`,
-      secondary: `${correct}/${listeningTask.questions.length} correct · L${listeningLevel}`,
+      secondary: `${correct}/${activeListeningQuestions.length} correct · L${listeningLevel}`,
       updatedAt: new Date().toISOString()
     });
 
@@ -281,7 +308,7 @@ export function PressureLabSimulator() {
       metrics: {
         correct,
         missed,
-        total: listeningTask.questions.length,
+        total: activeListeningQuestions.length,
         checks: checks.map((check) => ({
           id: check.id,
           expected: check.expected,
@@ -295,7 +322,7 @@ export function PressureLabSimulator() {
         pressure_profile: pressureProfileToJson(currentPressureProfile)
       }
     });
-  }, [currentPressureProfile, listeningAnswers, listeningCurrentTime, listeningLevel, missedListening, submitResult]);
+  }, [activeListeningQuestions, currentPressureProfile, listeningAnswers, listeningCurrentTime, listeningLevel, missedListening, submitResult]);
 
   const submitWriting = useCallback(() => {
     const targetAccuracy = Math.min(100, Math.round((wordCount / writingTask.targetWords) * 100));
@@ -320,13 +347,14 @@ export function PressureLabSimulator() {
         word_count: wordCount,
         erasures_used: erasuresUsed,
         erasures_limit: writingTask.erasuresLimit,
+        brainstorm_notes: brainstormNotes,
         wpm: writingWpm,
         forecast_words: forecastWords,
         target_words: writingTask.targetWords,
         pressure_profile: pressureProfileToJson(currentPressureProfile)
       }
     });
-  }, [currentPressureProfile, erasuresUsed, essayText, forecastWords, submitResult, wordCount, writingWpm]);
+  }, [brainstormNotes, currentPressureProfile, erasuresUsed, essayText, forecastWords, submitResult, wordCount, writingWpm]);
 
   useEffect(() => {
     resetSubmissionLock();
@@ -370,7 +398,7 @@ export function PressureLabSimulator() {
       return;
     }
 
-    const nextQuestion = listeningTask.questions.find(
+    const nextQuestion = activeListeningQuestions.find(
       (question) => listeningCurrentTime >= question.timecode && !listeningAnswers[question.id] && !missedListening[question.id]
     );
 
@@ -378,7 +406,7 @@ export function PressureLabSimulator() {
       setActiveListeningQuestionId(nextQuestion.id);
       setListeningQuestionStartMs(Date.now());
     }
-  }, [activeListeningQuestionId, listeningAnswers, listeningCurrentTime, listeningLevel, listeningStarted, missedListening]);
+  }, [activeListeningQuestionId, activeListeningQuestions, listeningAnswers, listeningCurrentTime, listeningLevel, listeningStarted, missedListening]);
 
   useEffect(() => {
     if (listeningStarted && listeningLevel !== 1 && listeningCurrentTime >= listeningTask.durationSeconds) {
@@ -515,11 +543,18 @@ export function PressureLabSimulator() {
   const startWriting = () => {
     resetSubmissionLock();
     writingStartedAtRef.current = null;
+    setBrainstormNotes("");
     setEssayText("");
     setErasuresUsed(writingTask.erasuresStart);
     setTopicBombSeconds(writingTask.topicBombSeconds);
     setWritingSeconds(writingTask.writingSeconds);
     setWritingPhase("topic");
+  };
+
+  const startEssayFromBrainstorm = () => {
+    writingStartedAtRef.current = Date.now();
+    setWritingSeconds(writingTask.writingSeconds);
+    setWritingPhase("writing");
   };
 
   const handleEssayKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -536,7 +571,7 @@ export function PressureLabSimulator() {
   };
 
   return (
-    <main className="pressure-output-shell">
+    <main className="pressure-output-shell app-shell" data-theme={designTheme} suppressHydrationWarning>
       <header className="output-header">
         <div className="output-brand">
           <span className="output-brand-mark">
@@ -564,6 +599,23 @@ export function PressureLabSimulator() {
         </nav>
 
         <div className="output-header-status" aria-label="System indicators">
+          <nav className="theme-switcher" aria-label="Design system themes">
+            {designThemes.map((theme) => (
+              <button
+                type="button"
+                key={theme.id}
+                aria-label={theme.ariaLabel}
+                aria-pressed={designTheme === theme.id}
+                title={`${theme.label}: ${theme.colorPair}`}
+                onClick={() => handleDesignThemeChange(theme.id)}
+              >
+                <span className="theme-symbol" aria-hidden="true">
+                  {theme.symbol}
+                </span>
+                <span className="theme-code">{theme.shortCode}</span>
+              </button>
+            ))}
+          </nav>
           <span title="idle">○</span>
           <span title="active">●</span>
           <span title="locked">◆</span>
@@ -606,8 +658,16 @@ export function PressureLabSimulator() {
       </aside>
 
       <section className="output-workspace" aria-label="IELTS Pressure Lab workspace">
-        {headerView === "map" && <TrainingMapPanel onOpenModule={setActiveModule} />}
-        {headerView === "command" && <CommandOverviewPanel activeModule={activeModule} submitStatus={submitStatus} profile={currentPressureProfile} ratings={moduleRatings} />}
+        {headerView === "map" && <TrainingMapPanel ratings={moduleRatings} onOpenModule={setActiveModule} />}
+        {headerView === "command" && (
+          <CommandOverviewPanel
+            activeModule={activeModule}
+            submitStatus={submitStatus}
+            profile={currentPressureProfile}
+            ratings={moduleRatings}
+            onSelectModule={setActiveModule}
+          />
+        )}
         {headerView === "console" && (
           <>
             {activeModule === "reading" && (
@@ -633,6 +693,7 @@ export function PressureLabSimulator() {
                 level={listeningLevel}
                 started={listeningStarted}
                 currentTime={listeningCurrentTime}
+                questions={activeListeningQuestions}
                 activeQuestionId={activeListeningQuestionId}
                 questionStartMs={listeningQuestionStartMs}
                 answers={listeningAnswers}
@@ -650,12 +711,15 @@ export function PressureLabSimulator() {
                 phase={writingPhase}
                 topicBombSeconds={topicBombSeconds}
                 writingSeconds={writingSeconds}
+                brainstormNotes={brainstormNotes}
                 essayText={essayText}
                 erasuresUsed={erasuresUsed}
                 wordCount={wordCount}
                 wpm={writingWpm}
                 forecastWords={forecastWords}
                 onStart={startWriting}
+                onStartEssay={startEssayFromBrainstorm}
+                onBrainstormChange={setBrainstormNotes}
                 onEssayChange={setEssayText}
                 onEssayKeyDown={handleEssayKeyDown}
                 onSubmit={submitWriting}
@@ -670,22 +734,30 @@ export function PressureLabSimulator() {
   );
 }
 
-function TrainingMapPanel({ onOpenModule }: { onOpenModule: (module: ExamModuleId) => void }) {
+function TrainingMapPanel({ ratings, onOpenModule }: { ratings: ModuleRatings; onOpenModule: (module: ExamModuleId) => void }) {
   return (
     <div className="output-panel">
       <div className="output-panel-heading">
         <span>TRAINING MAP</span>
-        <h1>Unlock exam conditions by module</h1>
+        <h1>Average IELTS Band by module</h1>
       </div>
       <div className="output-lane-grid">
-        {moduleSummaries.map((module) => (
-          <button type="button" key={module.id} className="output-lane" data-status={module.status} onClick={() => onOpenModule(module.id)}>
-            <strong>{module.label}</strong>
-            <span>{module.level}</span>
-            <small>{module.description}</small>
-            <em>{renderProgressBar(module.status === "locked" ? 20 : module.status === "critical" ? 48 : module.status === "watch" ? 64 : 78)}</em>
-          </button>
-        ))}
+        {moduleSummaries.map((module) => {
+          const rating = ratings[module.id];
+          const status = rating?.status ?? (module.id === "gauntlet" ? "locked" : "critical");
+          const averageBand = rating ? rating.averageBandScore.toFixed(1) : "—";
+          const progressPercent = rating?.progressPercent ?? 0;
+
+          return (
+            <button type="button" key={module.id} className="output-lane" data-status={status} onClick={() => onOpenModule(module.id)}>
+              <strong>{module.label}</strong>
+              <span>{statusLabel[status]}</span>
+              <small>{rating ? `Average Band ${averageBand} from ${rating.attempts} attempt${rating.attempts === 1 ? "" : "s"}` : "No module result yet"}</small>
+              <em>{renderProgressBar(progressPercent)}</em>
+              <small>{rating ? `${rating.averageAccuracy}% average accuracy / latest: ${rating.primary}` : module.description}</small>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -695,13 +767,16 @@ function CommandOverviewPanel({
   activeModule,
   submitStatus,
   profile,
-  ratings
+  ratings,
+  onSelectModule
 }: {
   activeModule: ExamModuleId;
   submitStatus: string;
   profile: PressureProfile;
   ratings: ModuleRatings;
+  onSelectModule: (module: ExamModuleId) => void;
 }) {
+  const activeRating = ratings[activeModule];
   const ratingRows: Array<{ module: ExamModuleId; label: string; fallback: string }> = [
     { module: "reading", label: "Reading", fallback: "No reading result yet" },
     { module: "listening", label: "Listening", fallback: "No listening result yet" },
@@ -716,16 +791,36 @@ function CommandOverviewPanel({
         <span>COMMAND CENTER</span>
         <h1>Section ratings and next-session telemetry</h1>
       </div>
+      <div className="command-module-picker" aria-label="Select active module for command telemetry">
+        {moduleSummaries.map((module) => {
+          const rating = ratings[module.id];
+          return (
+            <button type="button" key={module.id} aria-pressed={activeModule === module.id} onClick={() => onSelectModule(module.id)}>
+              <span>{module.label}</span>
+              <small>{rating ? `Avg ${rating.averageBandScore.toFixed(1)}` : "No score"}</small>
+            </button>
+          );
+        })}
+      </div>
       <div className="telemetry-grid">
-        <MetricCard label="Active Module" value={activeModule.toUpperCase()} detail="Selected from SIDEBAR" />
+        <MetricCard
+          label="Active Module"
+          value={activeModule.toUpperCase()}
+          detail={activeRating ? `Average Band ${activeRating.averageBandScore.toFixed(1)} / ${activeRating.attempts} attempts` : "Choose and complete a module to generate telemetry"}
+        />
+        <MetricCard
+          label="Selected Module Status"
+          value={activeRating ? statusLabel[activeRating.status] : activeModule === "gauntlet" ? "Locked" : "No result"}
+          detail={activeRating ? renderProgressBar(activeRating.progressPercent) : "Average scale waits for first submit"}
+        />
         {ratingRows.map((row) => {
           const rating = ratings[row.module];
           return (
             <MetricCard
               key={row.module}
               label={row.label}
-              value={rating ? `Band ${rating.bandScore.toFixed(1)} · ${rating.accuracy}%` : row.fallback}
-              detail={rating ? `${rating.primary} · ${rating.secondary}` : row.module === "gauntlet" ? "LOCKED" : "Complete a section to generate telemetry"}
+              value={rating ? `Avg Band ${rating.averageBandScore.toFixed(1)} / ${rating.averageAccuracy}%` : row.fallback}
+              detail={rating ? `Latest: Band ${rating.bandScore.toFixed(1)} / ${rating.primary} / ${rating.secondary}` : row.module === "gauntlet" ? "LOCKED" : "Complete this module to generate telemetry"}
             />
           );
         })}
@@ -902,6 +997,7 @@ function ListeningModule({
   level,
   started,
   currentTime,
+  questions,
   activeQuestionId,
   questionStartMs,
   answers,
@@ -917,6 +1013,7 @@ function ListeningModule({
   level: ExamLevel;
   started: boolean;
   currentTime: number;
+  questions: typeof listeningTask.questions;
   activeQuestionId: string | null;
   questionStartMs: number | null;
   answers: Record<string, string>;
@@ -928,7 +1025,7 @@ function ListeningModule({
   onSubmit: () => void;
   submitStatus: string;
 }) {
-  const activeQuestion = listeningTask.questions.find((question) => question.id === activeQuestionId);
+  const activeQuestion = questions.find((question) => question.id === activeQuestionId);
   const activeLevel = listeningTask.levels.find((item) => item.level === level) ?? listeningTask.levels[1];
   const activeSubtitle = listeningTask.subtitles.find((cue) => currentTime >= cue.start && currentTime < cue.end);
   const answerWindowLeft = activeQuestion
@@ -941,7 +1038,7 @@ function ListeningModule({
   const oneShotMode = level !== 1;
   const visibleQuestionTimer = level === 2;
   const visibleProgress = level !== 3;
-  const visibleQuestions = level === 1 ? listeningTask.questions : activeQuestion ? [activeQuestion] : [];
+  const visibleQuestions = level === 1 ? questions : activeQuestion ? [activeQuestion] : [];
 
   return (
     <div className="output-panel listening-panel">
@@ -1002,8 +1099,8 @@ function ListeningModule({
         )}
         <MetricCard
           label="Answered"
-          value={`${answeredCount}/${listeningTask.questions.length}`}
-          detail={renderProgressBar((answeredCount / listeningTask.questions.length) * 100)}
+          value={`${answeredCount}/${questions.length}`}
+          detail={renderProgressBar((answeredCount / questions.length) * 100)}
         />
         <MetricCard label="Missed" value={`${missedCount}`} detail={level === 1 ? "Guided mode: no miss lock" : missedCount ? "ANSWER MISSED" : "No misses yet"} />
       </div>
@@ -1037,7 +1134,7 @@ function ListeningModule({
           </div>
         )}
         <div className="question-timeline">
-          {listeningTask.questions.map((question) => (
+          {questions.map((question) => (
             <span key={question.id} data-state={answers[question.id] ? "answered" : missed[question.id] ? "missed" : currentTime >= question.timecode ? "active" : "pending"}>
               {question.id.replace("l-q", "")}
             </span>
@@ -1056,12 +1153,15 @@ function WritingModule({
   phase,
   topicBombSeconds,
   writingSeconds,
+  brainstormNotes,
   essayText,
   erasuresUsed,
   wordCount,
   wpm,
   forecastWords,
   onStart,
+  onStartEssay,
+  onBrainstormChange,
   onEssayChange,
   onEssayKeyDown,
   onSubmit,
@@ -1070,12 +1170,15 @@ function WritingModule({
   phase: WritingPhase;
   topicBombSeconds: number;
   writingSeconds: number;
+  brainstormNotes: string;
   essayText: string;
   erasuresUsed: number;
   wordCount: number;
   wpm: number;
   forecastWords: number;
   onStart: () => void;
+  onStartEssay: () => void;
+  onBrainstormChange: (value: string) => void;
   onEssayChange: (value: string) => void;
   onEssayKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onSubmit: () => void;
@@ -1093,24 +1196,45 @@ function WritingModule({
         {phase === "setup" && (
           <button type="button" className="output-primary-button" onClick={onStart}>
             <Zap size={18} />
-            Arm Topic Bomb
+            Start 5-minute Topic Bomb
           </button>
         )}
         {phase === "topic" && (
-          <div className="topic-bomb">
-            <AlertTriangle size={22} />
-            <strong>Topic Bomb</strong>
-            <span>{topicBombSeconds}s</span>
-          </div>
+          <>
+            <div className="topic-bomb">
+              <AlertTriangle size={22} />
+              <strong>Topic Bomb / brainstorm freely</strong>
+              <span>{formatTime(topicBombSeconds)}</span>
+            </div>
+            <p className="writing-topic">{writingTask.topic}</p>
+            <label className="writing-notes-field">
+              <span>Brainstorm notes remain after the topic disappears</span>
+              <textarea
+                value={brainstormNotes}
+                onChange={(event) => onBrainstormChange(event.target.value)}
+                placeholder="Plan examples, position, structure, vocabulary. Backspace/Delete are allowed here."
+              />
+            </label>
+            <button type="button" className="output-secondary-button" onClick={onStartEssay}>
+              Start essay now
+            </button>
+          </>
         )}
-        <p className="writing-topic">{writingTask.topic}</p>
-        <textarea
-          value={essayText}
-          onChange={(event) => onEssayChange(event.target.value)}
-          onKeyDown={onEssayKeyDown}
-          disabled={phase !== "writing"}
-          placeholder={phase === "writing" ? "Write without relying on deletion..." : "Topic locked until bomb reaches zero."}
-        />
+        {phase === "writing" && (
+          <>
+            <div className="topic-hidden-banner">
+              <Lock size={18} />
+              <strong>Topic hidden</strong>
+              <span>Your brainstorm notes stay available. Essay erasures are limited to 5.</span>
+            </div>
+            <textarea
+              value={essayText}
+              onChange={(event) => onEssayChange(event.target.value)}
+              onKeyDown={onEssayKeyDown}
+              placeholder="Write the essay from your notes. Backspace/Delete lock after 5 erasures."
+            />
+          </>
+        )}
         <button type="button" className="output-primary-button" onClick={onSubmit} disabled={phase === "setup" || phase === "topic"}>
           <Send size={18} />
           Submit Writing
@@ -1125,7 +1249,13 @@ function WritingModule({
         </div>
         <MetricCard label="Words" value={`${wordCount}/${writingTask.targetWords}`} detail={renderProgressBar(Math.min(100, (wordCount / writingTask.targetWords) * 100))} />
         <MetricCard label="Pace" value={`${wpm} wpm`} detail={`Forecast: ${forecastWords} words`} />
-        <MetricCard label="Erasures" value={`${erasuresUsed}/${writingTask.erasuresLimit}`} detail={erasuresLocked ? "Backspace/Delete locked" : "Deletion still available"} />
+        <MetricCard label="Erasures" value={`${erasuresUsed}/${writingTask.erasuresLimit}`} detail={phase === "topic" ? "Unlimited in brainstorm notes" : erasuresLocked ? "Backspace/Delete locked" : "Essay deletion still available"} />
+        {phase === "writing" && (
+          <div className="brainstorm-locker">
+            <span>Brainstorm notes</span>
+            <p>{brainstormNotes.trim() || "No notes captured during Topic Bomb."}</p>
+          </div>
+        )}
       </aside>
     </div>
   );
